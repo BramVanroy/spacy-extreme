@@ -41,6 +41,9 @@ DEFAULT_WORKERS = (cpu_count() - 1) or 1
     second part is actually the first line of the next chunk. Therefore, we return the first and last line of all
     chunks, and process them at the very end; stitching them back together.
     This means, though, that the order of the sentence in the input file is NOT preserved.
+    
+    You can use this file as a template, and only change the process_batch method to your liking.
+    That's where the actual values from spaCy are retrieved and processed.
 """
 
 
@@ -205,7 +208,7 @@ class Representator:
         n_tokens = 0
 
         # Get some value from spaCy that we want to write to files
-        # Here just the tokens
+        # Here we just get the tokens, but you can change it to whatever you want
         sents_tok = []
         for sent in spacy_sents:
             n_tokens += len(sent)
@@ -217,7 +220,7 @@ class Representator:
         # Return the number of sentences and number of tokens, just to keep track
         # Also return first and last line. These are likely to be 'broken' sentences
         # due to chunking. After processing everything, we will process these 'partial
-        # sentences' separately.
+        # sentences' separately in the main process.
         return n_sentences, n_tokens, first_line, last_line, chunk_start
 
     @staticmethod
