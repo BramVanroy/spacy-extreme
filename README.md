@@ -41,4 +41,5 @@ To remedy that, the first and last lines of each batch are retrieved and kept se
 As a last step, these broken lines are stitched back together and parsed as a single batch.
 
 For a large file_size/batch_size ratio, this may cause to large memory consumption as well, but I have not encountered this issue yet.
-A solution would be to periodically check for new 'partials', as I call broken sentences, and stitch those together.
+A solution would be to periodically check for new 'partials', as I call broken sentences, and stitch those together; or add these 
+partials to the results queue separately and let the writer process them when available.
