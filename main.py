@@ -244,7 +244,7 @@ class Representator:
                 if m == 'done':
                     break
 
-                fhout.write('\n'.join(m))
+                fhout.write('\n'.join(m) + '\n')
                 fhout.flush()
 
     def reader(self):
