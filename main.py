@@ -55,7 +55,7 @@ class Chunker:
         logging.info(f"Chunking with a batch size of {batch_size:,} bytes.")
 
     def chunkify(self):
-        """  Returns a tuple containing the starting file pointer to a new batch,
+        """  Yields a tuple containing the starting file pointer to a new batch,
              and whether a batch is the first batch, or the last batch. """
         file_end = stat(self.pfin).st_size
 
