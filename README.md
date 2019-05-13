@@ -87,7 +87,7 @@ Memory consumption never exceeded 78%.
 
 - `-n 24`: using 24 cores. 
 - `--spacy-model en_core_web_lg`: the largest Englsih spaCy model
-- `-b 50000000`: a batch size of 50 MB (50,000,000 bytes). With my data, this was roughly equivalent to 400k sentences
+- `-b 50000000`: a batch size of 50 MB (50,000,000 bytes). With my data, one such batch was roughly equivalent to 400k sentences
 - `-m 5`: replace a process after having processed 5 batches. In total each process processes 2M sentences before being replaced
 
 If you do not have a lot of memory available, you will want to set `--max-tasks-per-child` (`-m`) to 1 so that an active process is replaced after each batch.
