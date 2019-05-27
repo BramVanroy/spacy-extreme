@@ -1,9 +1,11 @@
 import datetime
+from html import unescape
 import logging
 from math import inf
 from multiprocessing import Manager, Pool, Process
 from os import cpu_count, stat
 from pathlib import Path
+import re
 
 import psutil
 import spacy
@@ -86,17 +88,37 @@ class Chunker:
 
 
 class Representator:
-    def __init__(self, max_length=None, min_length=None, spacy_model='en_core_web_sm'):
+    def __init__(self,
+                 do_html=False,
+                 do_unicode=False,
+                 do_lowercase=False,
+                 normalize_url=False,
+                 normalize_digits=False,
+                 max_length=None,
+                 min_length=None,
+                 spacy_model='en_core_web_sm'):
+
         self.max_length = max_length if max_length else inf
         self.min_length = min_length if min_length else 0
 
         self.nlp = spacy.load(spacy_model, disable=['ner', 'textcat'])
         self.nlp.add_pipe(self._prevent_sbd, name='prevent-sbd', before='parser')
+        self.tagmap = self.nlp.Defaults.tag_map
 
         self.results_q = None
         self.work_q = None
 
         self.chunker = None
+
+        self.do_html = do_html
+        self.do_unicode = do_unicode
+        self.do_lowercase = do_lowercase
+        self.do_normalize_url = normalize_url
+        self.do_normalize_digits = normalize_digits
+
+        self.digit_table = str.maketrans("0123456789", "1111111111")
+        self.url_regex = r'((([A-Za-z]{3,9}:(?:\/\/)?)(?:[-;:&=\+\$,\w]+@)?[A-Za-z0-9.-]+|(?:www\d*\.|[-;:&=\+\$,\w]+@)[A-Za-z0-9.,)(-]+)((?:\/[\+~%\/.\w_-]*)?\??(?:[-\+=&;%@.\w_]*)#?(?:[\w]*))?)'
+        self.unicode_regex = r'(?<!\b[a-zA-Z]:)(\\u[0-9A-Fa-f]{4})'
 
     def process(self, pfin, n_workers, max_tasks_per_child):
         logging.info(f"Started processing {pfin.name} with {n_workers} workers.")
@@ -198,6 +220,17 @@ class Representator:
             last_line = None
             chunk_start = None
 
+        # Might make more sense to do this immediatelly in the chunker
+        # But that would make processing annoying for the last batch
+        if self.do_html:
+            batch = map(unescape, batch)
+        if self.do_unicode:
+            batch = map(self.unicode_replace, batch)
+        if self.do_normalize_url:
+            batch = map(self.normalize_url, batch)
+        if self.do_normalize_digits:
+            batch = map(self.normalize_digits, batch)
+
         # Parse text with spaCy
         docs = list(self.nlp.pipe(batch))
         # Chop into sentences
@@ -212,7 +245,10 @@ class Representator:
         sents_tok = []
         for sent in spacy_sents:
             n_tokens += len(sent)
-            sents_tok.append(' '.join([token.text for token in sent]))
+            if self.do_lowercase:
+                sents_tok.append(' '.join([token.text.lower() for token in sent]))
+            else:
+                sents_tok.append(' '.join([token.text for token in sent]))
 
         # Pass results to queue, so they can be written to file by the writer
         self.results_q.put(sents_tok)
@@ -222,6 +258,22 @@ class Representator:
         # due to chunking. After processing everything, we will process these 'partial
         # sentences' separately in the main process.
         return n_sentences, n_tokens, first_line, last_line, chunk_start
+
+    def normalize_url(self, line, repl='@url@'):
+        return re.sub(self.url_regex, repl, line)
+
+    def normalize_digits(self, line):
+        return line.translate(self.digit_table)
+
+    def unicode_replace(self, line):
+        def repl(match):
+            match = match.group()
+            try:
+                return match.encode('utf-8').decode('unicode-escape')
+            except UnicodeDecodeError:
+                return match
+
+        return re.sub(self.unicode_regex, repl, line)
 
     @staticmethod
     def _prevent_sbd(doc):
@@ -264,6 +316,13 @@ if __name__ == '__main__':
                                                  ' into memory issues.',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('fin', help='input file.')
+
+    parser.add_argument('--do-html', action='store_true', help='unescape HTML characters.')
+    parser.add_argument('--do-unicode', action='store_true', help='convert unicode.')
+    parser.add_argument('--do-lowercase', action='store_true', help='lower case the text.')
+    parser.add_argument('--normalize-digits', action='store_true', help="replace all digits by '1'.")
+    parser.add_argument('--normalize-url', action='store_true', help="replace URLs by a '@url@' token.")
+
     parser.add_argument('-b', '--batch-size', type=int, default=1024 ** 2,
                         help='batch size (in bytes).')
     parser.add_argument('--max-length', type=int, default=None,
