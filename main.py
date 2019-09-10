@@ -39,10 +39,6 @@ DEFAULT_WORKERS = (cpu_count() - 1) or 1
 
     Reading input happens in chunks. The byte file pointers of each chunk are passed to the child processes,
     leaving them in charge of actually getting the contents from the file.
-    Because byte chunks are line-agnostic, we assume that the last line of each chunk is an incomplete line whose
-    second part is actually the first line of the next chunk. Therefore, we return the first and last line of all
-    chunks, and process them at the very end; stitching them back together.
-    This means, though, that the order of the sentence in the input file is NOT preserved.
     
     You can use this file as a template, and only change the process_batch method to your liking.
     That's where the actual values from spaCy are retrieved and processed.
@@ -50,41 +46,38 @@ DEFAULT_WORKERS = (cpu_count() - 1) or 1
 
 
 class Chunker:
-    def __init__(self, pfin, batch_size=1024 ** 2):
-        self.batch_size = batch_size
-        self.pfin = pfin
+    def __init__(self, fin, batch_size=1000):
+        self.batch_size = int(batch_size * 1e3)
+        self.pfin = Path(fin).resolve()
 
-        logging.info(f"Chunking with a batch size of {batch_size:,} bytes.")
+        logging.info(f"Chunking with a batch size of {batch_size:,} kilobytes.")
 
     def chunkify(self):
-        """  Yields a tuple containing the starting file pointer to a new batch,
-             and whether a batch is the first batch, or the last batch. """
+        """ yields chunks containing the starting byte, and the current chunk_size """
         file_end = stat(self.pfin).st_size
 
-        # If the file is smaller than or equal to the buffer size,
-        # we can get it all in one batch
+        # If the file is smaller than or equal to the buffer size, we can get it all in one batch
         if file_end <= self.batch_size:
-            yield 0, True, True
-            return None
+            yield 0, file_end
         else:
-            for chunk_start in range(0, file_end - self.batch_size, self.batch_size):
-                yield chunk_start, chunk_start == 0, False
+            with self.pfin.open('rb') as fhin:
+                prev_pos = 0
+                while prev_pos < file_end:
+                    pos = prev_pos + self.batch_size
+                    fhin.seek(pos)
+                    _ = fhin.readline()
+                    pos = fhin.tell()
+                    yield prev_pos, pos-prev_pos
+                    prev_pos = pos
 
-            yield chunk_start + self.batch_size, False, True
-
-    def get_batch(self, chunk_start, is_first, is_last):
+    def get_batch(self, chunk_start, chunk_size):
         with open(self.pfin, 'rb') as f:
             f.seek(chunk_start)
-            chunk = f.read(self.batch_size)
+            chunk = f.read(chunk_size)
 
         batch = chunk.split(b'\n')
 
-        # Only pop the first/last line if the batch is not
-        # the first/last batch respectively
-        first_line = batch.pop(0) if not is_first else None
-        last_line = batch.pop(-1) if not is_last else None
-
-        return [s.decode('utf-8').rstrip() for s in filter(None, batch)], first_line, last_line, chunk_start
+        return [s.decode('utf-8').rstrip() for s in filter(None, batch)]
 
 
 class Representator:
@@ -142,17 +135,15 @@ class Representator:
 
             with Pool(n_workers, maxtasksperchild=max_tasks_per_child) as pool:
                 worker_jobs = []
-                partials = []
 
                 while True:
                     # Get work from the working queue
                     work = self.work_q.get()
                     if work == 'done':
                         break
-
-                    batch_start, is_first_batch, is_last_batch = work
+                    chunk_start, chunk_size = work
                     # Apply work to workers
-                    job = pool.apply_async(self.process_batch, (batch_start, is_first_batch, is_last_batch))
+                    job = pool.apply_async(self.process_batch, (chunk_start, chunk_size))
                     worker_jobs.append(job)
 
                 # After the queue is 'done', the reader can close
@@ -161,9 +152,8 @@ class Representator:
 
                 # When a worker has finished its job, get its information back
                 for job_idx, job in enumerate(worker_jobs, 1):
-                    n_sentences, n_tokens, first_line, last_line, chunk_start = job.get()
+                    n_sentences, n_tokens = job.get()
 
-                    partials.append((chunk_start, first_line, last_line))
                     total_n_sentences += n_sentences
                     total_n_tokens += n_tokens
 
@@ -174,12 +164,6 @@ class Representator:
                         time_since_start = self._format_time(time_since_start)
                         logging.info(f"Processed batch #{job_idx:,}: {n_sentences:,} sents ({sents_perf:,.0f} sents/s)."
                                      f" Mem. use: {psutil.virtual_memory().percent}%. Running for {time_since_start}")
-
-                # Process all partials as a single batch
-                # When your batch size is very small, this will give a lot of overhead
-                n_sentences, n_tokens, _, _, _ = self.process_last_batch(partials)
-                total_n_sentences += n_sentences
-                total_n_tokens += n_tokens
 
                 # Notify the writer that we're done
                 self.results_q.put('done')
@@ -194,34 +178,10 @@ class Representator:
         logging.info(f"Done processing in {running_time} ({sents_perf:,.0f} sentences/s)."
                      f" Processed {total_n_sentences:,.0f} sentences and {total_n_tokens:,.0f} tokens.")
 
-    def process_last_batch(self, partials):
-        # Sort partials on their start-byte to ensure
-        # that they are ordered correctly
-        partials = sorted(partials, key=lambda x: x[0])
+    def process_batch(self, chunk_start, chunk_size):
+        batch = self.chunker.get_batch(chunk_start, chunk_size)
 
-        batch = []
-        prev_last = None
-        for _, first, last in partials:
-            if prev_last is not None and first is not None:
-                chunk = prev_last + first
-                batch.append(chunk.decode('utf-8'))
-
-            prev_last = last
-
-        return self.process_batch(batch=batch)
-
-    def process_batch(self, chunk_start=None, is_first=None, is_last=None, batch=None):
-        # 'batch' is always None, except for the very last batch which processes all partials.
-        # See 'process_last_batch'.
-        if batch is None:
-            batch, first_line, last_line, chunk_start = self.chunker.get_batch(chunk_start, is_first, is_last)
-        else:
-            first_line = None
-            last_line = None
-            chunk_start = None
-
-        # Might make more sense to do this immediatelly in the chunker
-        # But that would make processing annoying for the last batch
+        # Might make more sense to do this immediatelly in the chunker or in a normalizer class...
         if self.do_html:
             batch = map(unescape, batch)
         if self.do_unicode:
@@ -257,7 +217,7 @@ class Representator:
         # Also return first and last line. These are likely to be 'broken' sentences
         # due to chunking. After processing everything, we will process these 'partial
         # sentences' separately in the main process.
-        return n_sentences, n_tokens, first_line, last_line, chunk_start
+        return n_sentences, n_tokens
 
     def normalize_url(self, line, repl='@url@'):
         return re.sub(self.url_regex, repl, line)
@@ -323,8 +283,8 @@ if __name__ == '__main__':
     parser.add_argument('--normalize-digits', action='store_true', help="replace all digits by '1'.")
     parser.add_argument('--normalize-url', action='store_true', help="replace URLs by a '@url@' token.")
 
-    parser.add_argument('-b', '--batch-size', type=int, default=1024 ** 2,
-                        help='batch size (in bytes).')
+    parser.add_argument('-b', '--batch-size', type=int, default=1000,
+                        help='batch size (in kilobytes).')
     parser.add_argument('--max-length', type=int, default=None,
                         help="sentences with more than 'max_length' will not be included in the output.")
     parser.add_argument('-m', '--max-tasks-per-child', type=int, default=5,
