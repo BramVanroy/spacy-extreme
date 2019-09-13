@@ -2,11 +2,13 @@ import datetime
 import logging
 from math import inf
 from multiprocessing import Manager, Pool, Process
-from os import cpu_count, stat
+from os import cpu_count
 from pathlib import Path
 
 import psutil
 import spacy
+
+from Chunker import Chunker
 
 logging.basicConfig(datefmt='%d-%b %H:%M:%S',
                     format='%(asctime)s - [%(levelname)s]: %(message)s',
@@ -16,7 +18,7 @@ logging.basicConfig(datefmt='%d-%b %H:%M:%S',
                         logging.StreamHandler()
                     ])
 
-DEFAULT_WORKERS = (cpu_count() - 1) or 1
+DEFAULT_WORKERS = (cpu_count() - 2) or 1
 
 """ Processes a single, huge text file with spaCy, without running into memory issues 
     IF the right parameters are chosen.
@@ -45,44 +47,6 @@ DEFAULT_WORKERS = (cpu_count() - 1) or 1
     You can use this file as a template, and only change the process_batch method to your liking.
     That's where the actual values from spaCy are retrieved and processed.
 """
-
-
-class Chunker:
-    def __init__(self, pfin, batch_size=1024 ** 2):
-        self.batch_size = batch_size
-        self.pfin = pfin
-
-        logging.info(f"Chunking with a batch size of {batch_size:,} bytes.")
-
-    def chunkify(self):
-        """  Yields a tuple containing the starting file pointer to a new batch,
-             and whether a batch is the first batch, or the last batch. """
-        file_end = stat(self.pfin).st_size
-
-        # If the file is smaller than or equal to the buffer size,
-        # we can get it all in one batch
-        if file_end <= self.batch_size:
-            yield 0, True, True
-            return None
-        else:
-            for chunk_start in range(0, file_end - self.batch_size, self.batch_size):
-                yield chunk_start, chunk_start == 0, False
-
-            yield chunk_start + self.batch_size, False, True
-
-    def get_batch(self, chunk_start, is_first, is_last):
-        with open(self.pfin, 'rb') as f:
-            f.seek(chunk_start)
-            chunk = f.read(self.batch_size)
-
-        batch = chunk.split(b'\n')
-
-        # Only pop the first/last line if the batch is not
-        # the first/last batch respectively
-        first_line = batch.pop(0) if not is_first else None
-        last_line = batch.pop(-1) if not is_last else None
-
-        return [s.decode('utf-8').rstrip() for s in filter(None, batch)], first_line, last_line, chunk_start
 
 
 class Representator:
@@ -120,18 +84,18 @@ class Representator:
 
             with Pool(n_workers, maxtasksperchild=max_tasks_per_child) as pool:
                 worker_jobs = []
-                partials = []
-
+                logging.info('Chunking...')
                 while True:
                     # Get work from the working queue
                     work = self.work_q.get()
                     if work == 'done':
                         break
 
-                    batch_start, is_first_batch, is_last_batch = work
+                    chunk_start, chunk_size = work
                     # Apply work to workers
-                    job = pool.apply_async(self.process_batch, (batch_start, is_first_batch, is_last_batch))
+                    job = pool.apply_async(self.process_batch, (chunk_start, chunk_size))
                     worker_jobs.append(job)
+                logging.info('Done chunking...')
 
                 # After the queue is 'done', the reader can close
                 reader_proc.join()
@@ -139,9 +103,8 @@ class Representator:
 
                 # When a worker has finished its job, get its information back
                 for job_idx, job in enumerate(worker_jobs, 1):
-                    n_sentences, n_tokens, first_line, last_line, chunk_start = job.get()
+                    n_sentences, n_tokens = job.get()
 
-                    partials.append((chunk_start, first_line, last_line))
                     total_n_sentences += n_sentences
                     total_n_tokens += n_tokens
 
@@ -152,12 +115,6 @@ class Representator:
                         time_since_start = self._format_time(time_since_start)
                         logging.info(f"Processed batch #{job_idx:,}: {n_sentences:,} sents ({sents_perf:,.0f} sents/s)."
                                      f" Mem. use: {psutil.virtual_memory().percent}%. Running for {time_since_start}")
-
-                # Process all partials as a single batch
-                # When your batch size is very small, this will give a lot of overhead
-                n_sentences, n_tokens, _, _, _ = self.process_last_batch(partials)
-                total_n_sentences += n_sentences
-                total_n_tokens += n_tokens
 
                 # Notify the writer that we're done
                 self.results_q.put('done')
@@ -172,36 +129,14 @@ class Representator:
         logging.info(f"Done processing in {running_time} ({sents_perf:,.0f} sentences/s)."
                      f" Processed {total_n_sentences:,.0f} sentences and {total_n_tokens:,.0f} tokens.")
 
-    def process_last_batch(self, partials):
-        # Sort partials on their start-byte to ensure
-        # that they are ordered correctly
-        partials = sorted(partials, key=lambda x: x[0])
-
-        batch = []
-        prev_last = None
-        for _, first, last in partials:
-            if prev_last is not None and first is not None:
-                chunk = prev_last + first
-                batch.append(chunk.decode('utf-8'))
-
-            prev_last = last
-
-        return self.process_batch(batch=batch)
-
-    def process_batch(self, chunk_start=None, is_first=None, is_last=None, batch=None):
-        # 'batch' is always None, except for the very last batch which processes all partials.
-        # See 'process_last_batch'.
-        if batch is None:
-            batch, first_line, last_line, chunk_start = self.chunker.get_batch(chunk_start, is_first, is_last)
-        else:
-            first_line = None
-            last_line = None
-            chunk_start = None
+    def process_batch(self, chunk_start, chunk_size):
+        batch = self.chunker.get_batch(chunk_start, chunk_size)
 
         # Parse text with spaCy
-        docs = list(self.nlp.pipe(batch))
+        docs = self.nlp.pipe(batch)
         # Chop into sentences
         spacy_sents = [sent for doc in docs for sent in doc.sents]
+        del docs
         # Filter too long or too short sentences
         spacy_sents = [sent for sent in spacy_sents if self.min_length <= len(sent) <= self.max_length]
         n_sentences = len(spacy_sents)
@@ -221,7 +156,7 @@ class Representator:
         # Also return first and last line. These are likely to be 'broken' sentences
         # due to chunking. After processing everything, we will process these 'partial
         # sentences' separately in the main process.
-        return n_sentences, n_tokens, first_line, last_line, chunk_start
+        return n_sentences, n_tokens
 
     @staticmethod
     def _prevent_sbd(doc):
@@ -264,8 +199,8 @@ if __name__ == '__main__':
                                                  ' into memory issues.',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('fin', help='input file.')
-    parser.add_argument('-b', '--batch-size', type=int, default=1024 ** 2,
-                        help='batch size (in bytes).')
+    parser.add_argument('-b', '--batch-size', type=int, default=1000,
+                        help='batch size (in kilobytes).')
     parser.add_argument('--max-length', type=int, default=None,
                         help="sentences with more than 'max_length' will not be included in the output.")
     parser.add_argument('-m', '--max-tasks-per-child', type=int, default=5,
