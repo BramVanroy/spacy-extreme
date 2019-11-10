@@ -18,6 +18,7 @@ class Chunker:
         self.batch_size = int(batch_size * 1e3)
         self.encoding = encoding
         self.pfin = Path(fin).resolve()
+        self.file_end = stat(self.pfin).st_size
 
         logger.info(f"Chunking with a batch size of {batch_size:,} kilobytes.")
 
@@ -28,15 +29,13 @@ class Chunker:
 
         :returns a generator that yields tuples of two integers: the starting byte of the chunk and its size
         """
-        file_end = stat(self.pfin).st_size
-
         # If the file is smaller than or equal to the buffer size, we can get it all in one batch
-        if file_end <= self.batch_size:
-            yield 0, file_end
+        if self.file_end <= self.batch_size:
+            yield 0, self.file_end
         else:
             with self.pfin.open('rb') as fhin:
                 prev_pos = 0
-                while prev_pos < file_end:
+                while prev_pos < self.file_end:
                     pos = prev_pos + self.batch_size
                     fhin.seek(pos)
                     fhin.readline()
@@ -44,19 +43,15 @@ class Chunker:
                     yield prev_pos, pos - prev_pos
                     prev_pos = pos
 
-    def get_batch(self, chunk_start: int, chunk_size: int, rm_newlines: bool = True) -> Generator:
+    def get_batch(self, chunk_start: int, chunk_size: int) -> Generator:
         """ Retrieves a chunk, given a starting byte and chunk size, as a batch of encoded lines through a generator.
 
         :param chunk_start: the starting byte position of the requested chunk
         :param chunk_size: the size of the requested chunk
-        :param rm_newlines: whether to remove the newlines at the end of each line (rstrip)
         :returns a generator that yields each encoded line in the batch
         """
         with open(self.pfin, 'rb') as f:
             f.seek(chunk_start)
             chunk = f.read(chunk_size)
 
-        if rm_newlines:
-            return (s.decode(self.encoding).rstrip() for s in chunk.split(b'\n') if s)
-        else:
-            return (s.decode(self.encoding) for s in chunk.split(b'\n') if s)
+        return (s.decode(self.encoding).rstrip() for s in chunk.split(b'\n') if s)

@@ -2,3 +2,7 @@ data
 .idea
 Pipfile.lock
 progress.log
+
+
+__pycache__
+*.egg*

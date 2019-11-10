@@ -8,7 +8,7 @@ from pathlib import Path
 import psutil
 import spacy
 
-from Chunker import Chunker
+from spacy_extreme.Chunker import Chunker
 
 logging.basicConfig(datefmt='%d-%b %H:%M:%S',
                     format='%(asctime)s - [%(levelname)s]: %(message)s',
