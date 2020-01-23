@@ -3,7 +3,8 @@ An example of how to use spaCy for extremely large files without running into me
 
 ## Memory issues with spaCy
 **EDIT**: the memory issues with running the spaCy pipeline were fixed in [#4486](https://github.com/explosion/spaCy/pull/4486).
-I will keep this repo online as an educational code snippet of how to efficiently chunk your data, though.
+I will keep this repo online as an educational code snippet of how to efficiently chunk your data, though. The rest of
+this section can be ignored.
 
 SpaCy is a popular, powerful NLP tool that can process a text and get almost any information out of it that you could need. 
 Unfortunately I started running into issues when multiprocessing a single file of 30GB+: the memory usage kept growing. 
@@ -37,15 +38,6 @@ When the child process retrieves a cursor position, it will look it up in the fi
 This chunk can then be processed.
 As may be clear, the actual file contents are *not* retrieved by the first step in the reader process.
 We do not want to share these huge chunks of data between processes, but the file pointer is just an integer; easily and quickly shared.
-
-Parsing a file in chunks has some shortcomings, as a chunk does not necessarily end at a line ending,
-which leaves you with broken sentences.
-To remedy that, the first and last lines of each batch are retrieved and kept separately, as they are likely to be broken.
-As a last step, these broken lines are stitched back together and parsed as a single batch.
-
-For a large file_size/batch_size ratio, this may cause to large memory consumption as well, but I have not encountered this issue yet.
-A solution would be to periodically check for new 'partials', as I call broken sentences, and stitch those together; or add these 
-partials to the results queue separately and let the writer process them when available.
 
 ## Usage
 
