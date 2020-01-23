@@ -39,9 +39,6 @@ DEFAULT_WORKERS = (cpu_count() - 2) or 1
 
     Reading input happens in chunks. The byte file pointers of each chunk are passed to the child processes,
     leaving them in charge of actually getting the contents from the file.
-    Because byte chunks are line-agnostic, we assume that the last line of each chunk is an incomplete line whose
-    second part is actually the first line of the next chunk. Therefore, we return the first and last line of all
-    chunks, and process them at the very end; stitching them back together.
     This means, though, that the order of the sentence in the input file is NOT preserved.
     
     You can use this file as a template, and only change the process_batch method to your liking.
