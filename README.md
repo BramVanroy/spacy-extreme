@@ -2,6 +2,9 @@
 An example of how to use spaCy for extremely large files without running into memory issues
 
 ## Memory issues with spaCy
+**EDIT**: the memory issues with running the spaCy pipeline were fixed in [#4486](https://github.com/explosion/spaCy/pull/4486).
+I will keep this repo online as an educational code snippet of how to efficiently chunk your data, though.
+
 SpaCy is a popular, powerful NLP tool that can process a text and get almost any information out of it that you could need. 
 Unfortunately I started running into issues when multiprocessing a single file of 30GB+: the memory usage kept growing. 
 Even with [the simplest base case](https://github.com/explosion/spaCy/issues/3618) the issue persists. 
