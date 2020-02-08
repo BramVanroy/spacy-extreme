@@ -35,7 +35,7 @@ DEFAULT_WORKERS = (cpu_count() - 2) or 1
             for n-workers. Also, the more cores you put to work simultaneously, the more memory you will be using.
             On top of that, if your batch-size is too small, the reader will not be fast enough to feed all the workers.
             So, again, you need to find a good trade-off focused on the batch-size.
-        - --space-model: it makes sense that if you use a large spaCy model, you will consume more memory. 
+        - --spacy-model: it makes sense that if you use a large spaCy model, you will consume more memory. 
 
     Reading input happens in chunks. The byte file pointers of each chunk are passed to the child processes,
     leaving them in charge of actually getting the contents from the file.
